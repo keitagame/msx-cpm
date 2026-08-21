@@ -43,7 +43,10 @@ PPI_PORTC EQU 0AAh
 ENTRY:
         DI                 
         LD   SP, STACK_TOP  
-
+        EI
+        LD    A, 92h
+        OUT   (0ABh), A
+        
         LD   A, 0xF1       
         OUT  (VDP_ADDR), A
         LD   A, 0x87
@@ -68,44 +71,108 @@ ENTRY:
         
 
 MAIN_LOOP:
-        CALL LB
-        LD   A, 'A'
-        CALL PRINT
-        LD   A, '>'
-        CALL PRINT
-        CALL LB
-        LD   A, ' '
-        LD    HL, 80                ; 3行目 (40 * 2行分)
-        LD    (VDP_ADDR), HL
-        CALL  READLINE
+        CALL  LB                  ; 改行
+        LD    A, 'A'
+        CALL  PRINT
+        LD    A, '>'
+        CALL  PRINT              ; プロンプト "A>" 表示
+
+        CALL  READLINE           ; 1行入力処理を呼び出し
+
+        ; --- ここに入力結果 (LINEBUF) の解析処理を記述 ---
+
+        JR    MAIN_LOOP          ; 再びメインループの先頭へ戻る
+
+
+; =========================================================
+; 1行入力サブルーチン (READLINE)
+; 入力: なし
+; 出力: LINEBUF にNUL終端文字列が格納される
+; =========================================================
 READLINE:
-            LD    HL, LINEBUF
-            LD    B, 0                  ; 文字数カウンタ
+        PUSH  AF
+        PUSH  BC
+        PUSH  DE
+        PUSH  HL
+
+        LD    HL, LINEBUF
+        LD    B, 0               ; 文字数カウンタ
+
 RL_LOOP:
-            CALL  GETKEY_DIRECT         
-            
-            CP    0Dh                   ; Enter?
-            JR    Z, RL_DONE
-            CP    08h                   ; BackSpace?
-            JR    Z, RL_BS
-            CP    20h                   ; 制御文字チェック (20h未満は無視)
-            JR    C, RL_LOOP
+        CALL  GETKEY_DIRECT      ; 1文字入力待ち (キーが押されるまでここでブロック)
+        OR    A                  ; 0チェック
+        JR    Z, RL_LOOP         ; 何も取得できなければ再試行
 
-            ; バッファ判定
-            LD    C, A
-            LD    A, B
-            CP    LINEBUF_LEN-1
-            JR    NC, RL_LOOP           ; 満杯なら無視
+        CP    0Dh                ; Enterキー?
+        JR    Z, RL_DONE
 
-            ; バッファ書き込み
-            LD    A, C
-            LD    (HL), A
-            INC   HL
-            INC   B
+        CP    08h                ; BackSpaceキー?
+        JR    Z, RL_BS
 
-            ; 画面へ1文字直接出力 & カーソル進める
-            CALL  PUTCHAR_DIRECT
-            JR    RL_LOOP
+        CP    20h                ; 制御文字チェック (スペース未満は無視)
+        JR    C, RL_LOOP
+
+        ; --- バッファ溢れチェック ---
+        LD    C, A
+        LD    A, B
+        CP    LINEBUF_LEN - 1
+        JR    NC, RL_LOOP        ; 満杯なら無視
+
+        ; --- バッファへ格納 & 画面表示 ---
+        LD    A, C
+        LD    (HL), A            ; バッファに書き込み
+        INC   HL
+        INC   B                  ; カウンタ +1
+
+        CALL  PRINT              ; 画面へ1文字描画 (VRAM_POS更新含む)
+        JR    RL_LOOP
+
+RL_BS:
+        ; --- バックスペース処理 ---
+        LD    A, B
+        OR    A
+        JR    Z, RL_LOOP         ; 先頭なら無視
+
+        DEC   HL
+        DEC   B
+
+        ; カーソルを1文字戻して空白で上書き
+        CALL  DEC_CURSOR
+        LD    A, ' '
+        CALL  PRINT
+        CALL  DEC_CURSOR
+        JR    RL_LOOP
+
+RL_DONE:
+        LD    (HL), 0            ; NUL終端
+
+        CALL  LB                 ; 入力完了後に改行
+
+        POP   HL
+        POP   DE
+        POP   BC
+        POP   AF
+        RET
+
+
+; =========================================================
+; カーソル位置を1文字戻す (DEC_CURSOR)
+; =========================================================
+DEC_CURSOR:
+        PUSH  HL
+        LD    HL, (VRAM_POS)
+        LD    A, H
+        OR    L
+        JR    Z, DC_END          ; 0なら戻さない
+        DEC   HL
+        LD    (VRAM_POS), HL
+        CALL  SET_VRAM_ADDR      ; VDPへアドレス送信
+DC_END:
+        POP   HL
+        RET
+RL_RET:
+            RET
+
 
 PRINT_STRING:
             LD    A, (HL)               ; 文字を取得
@@ -115,41 +182,6 @@ PRINT_STRING:
             CALL  PRINT        ; 1文字描画 (VRAM_POSが自動で+1される)
             INC   HL                    ; 次の文字へ
             JR    PRINT_STRING
-
-RL_BS:
-            LD    A, B
-            OR    A
-            JR    Z, RL_LOOP            ; 先頭なら無視
-
-            DEC   HL
-            DEC   B
-
-            ; 画面のカーソルを1文字戻して空白で消去
-            CALL  DEC_CURSOR
-            LD    A, ' '
-            CALL  PUTCHAR_DIRECT
-            CALL  DEC_CURSOR            ; 空白描画で進んだカーソルを再度戻す
-            JR    RL_LOOP
-
-RL_DONE:
-            LD    (HL), 0               ; NUL終端
-
-            ; 改行処理 (次の行の先頭へ移動)
-            ; 現在のVRAMアドレスを 40 で割って1行（40文字）進める
-            LD    HL, (VDP_ADDR)
-            LD    DE, 40
-            ADD   HL, DE
-            
-            ; 40の倍数（行頭）に切り下げ処理
-            ; HL / 40 の端数を計算して引く、または簡易的に行頭計算
-            ; ここでは単純に次の行の行頭へセット
-            CALL  ALIGN_NEXT_LINE
-            JR    RL_RET
-
-RL_RET:
-            RET
-
-
 PUTCHAR_DIRECT:
             PUSH  AF
             PUSH  HL
@@ -163,14 +195,6 @@ PUTCHAR_DIRECT:
             POP   HL
             RET
 
-; カーソル（VRAM位置）を1文字戻す
-DEC_CURSOR:
-            PUSH  HL
-            LD    HL, (VDP_ADDR)
-            DEC   HL
-            LD    (VDP_ADDR), HL
-            POP   HL
-            RET
 
 ; 次の行の先頭アドレス（40の倍数）へ整列
 ALIGN_NEXT_LINE:
@@ -210,14 +234,138 @@ ALIGN_END:
             POP   HL
             RET
 
+; =========================================================
+; キー入力 動作確認用デバッグループ
+; =========================================================
+KEY_TEST:
+        ; 画面に '?' を出して入力待ち状態であることを示す
+        LD    A, '?'
+        CALL  PRINT
+
+KT_LOOP:
+        CALL  GETKEY_DIRECT      ; キー入力を待つ
+        
+        ; 押されたキーのASCIIコードをそのまま描画
+        ; (入力が成功していれば、押した文字が画面に出力されます)
+        CALL  PRINT
+        
+        JR    KT_LOOP            ; 画面出力したら次の入力待ちへ
+; PPI Portアドレス (MSX標準)
+PPI_PORTA   EQU 0A8h    ; キー入力 (8ビット)
+PPI_PORTC   EQU 0AAh    ; キー行選択 (Bit 0-3)
 
 GETKEY_DIRECT:
-            ; 1. PPI Port C (0AAh) の下位4bitにマトリクス行番号をセット
-            ; 2. PPI Port A (0A8h) から8bitのキー状態を読み込む (0=押されている)
-            ; 3. キーリリースを待ってから復調したASCII文字をAに返す
-            
-            ; (※実用コードではマトリクスとASCIIの変換テーブルが必要です)
-            ; 処理簡略化の概念フロー:
+        ; --- 1. キーが押されるまで待機 ---
+GK_WAIT_PRESS:
+        CALL    SCAN_KEYBOARD_HARD
+        OR      A
+        JR      Z, GK_WAIT_PRESS    ; 0なら押されていない
+
+        PUSH    AF                  ; キーコードを保存
+
+        ; --- 2. チャタリング防止ウェイト ---
+        LD      BC, 1000
+GK_DEBOUNCE:
+        DEC     BC
+        LD      A, B
+        OR      C
+        JR      NZ, GK_DEBOUNCE
+
+        ; --- 3. キーが離されるまで待機 ---
+GK_WAIT_RELEASE:
+        CALL    SCAN_KEYBOARD_HARD
+        OR      A
+        JR      NZ, GK_WAIT_RELEASE
+
+        POP     AF                  ; ASCIIコードを復元
+        RET
+
+; =========================================================
+; キーマトリクス・スキャン
+; 出力: A = ASCIIコード (未入力時は 0)
+; =========================================================
+SCAN_KEYBOARD_HARD:
+        LD      C, 0                ; 行0からスタート
+SKH_LOOP:
+        CALL    READ_PPI_DIRECT
+        CPL                         ; 押されたビットを1にする (0=押された -> 1=押された)
+        OR      A
+        JR      NZ, SKH_FOUND       ; 何か押されていれば解析へ
+
+        INC     C
+        LD      A, C
+        CP      9                   ; 行0〜8までスキャン (必要に応じて拡張可)
+        JR      C, SKH_LOOP
+
+        XOR     A                   ; 何も押されていない
+        RET
+
+; キーが検出された場合の変換処理
+SKH_FOUND:
+        ; C = 行番号 (0-8), A = ビットパターン (1の位が押されたビット)
+        LD      B, 0
+SKH_BIT_SEARCH:
+        RRCA                        ; 右シフトしてキャリーフラグへ
+        JR      C, SKH_MATCH
+        INC     B                   ; ビット位置 (0-7)
+        JR      SKH_BIT_SEARCH
+
+SKH_MATCH:
+        ; 行(C) と ビット位置(B) からテーブルオフセットを計算
+        ; オフセット = (行 * 8) + ビット位置
+        LD      A, C
+        ADD     A, A                ; * 2
+        ADD     A, A                ; * 4
+        ADD     A, A                ; * 8
+        ADD     A, B                ; + ビット位置
+
+        LD      E, A
+        LD      D, 0
+        LD      HL, KEY_MAPTABLE
+        ADD     HL, DE
+        LD      A, (HL)             ; テーブルからASCIIコードを取得
+        RET
+
+; =========================================================
+; PPI直接読み出し
+; 入力: C = 行番号 (0〜11)
+; 出力: A = Port A データ
+; =========================================================
+READ_PPI_DIRECT:
+        IN      A, (PPI_PORTC)
+        AND     0F0h                ; 上位4ビットを維持
+        OR      C                   ; 下位4ビットに行番号をセット
+        OUT     (PPI_PORTC), A
+
+        ; 応答遅延 (ウェイト)
+        EX      (SP), HL
+        EX      (SP), HL
+
+        IN      A, (PPI_PORTA)      ; 押されたキーデータの取得
+        RET
+
+; =========================================================
+; MSX標準キーマトリクス ASCII変換テーブル (行0〜行8)
+; =========================================================
+KEY_MAPTABLE:
+    ; 行 0: 7, 6, 5, 4, 3, 2, 1, 0
+    DB '7', '6', '5', '4', '3', '2', '1', '0'
+    ; 行 1: ;, ], [, \, =, -, 9, 8
+    DB ';', ']', '[', '\', '=', '-', '9', '8'
+    ; 行 2: B, A,  ,  ,  , ., ,, `
+    DB 'B', 'A',  0,  0,  0, '.', ',', '`'
+    ; 行 3: J, I, H, G, F, E, D, C
+    DB 'J', 'I', 'H', 'G', 'F', 'E', 'D', 'C'
+    ; 行 4: R, Q, P, O, N, M, L, K
+    DB 'R', 'Q', 'P', 'O', 'N', 'M', 'L', 'K'
+    ; 行 5: Z, Y, X, W, V, U, T, S
+    DB 'Z', 'Y', 'X', 'W', 'V', 'U', 'T', 'S'
+    ; 行 6: F3, F2, F1, CODE, CAPS, GRAPH, CTRL, SHIFT
+    DB  0,   0,   0,    0,    0,     0,    0,     0
+    ; 行 7: RET, SELECT, BS, STOP, TAB, ESC, RIGHT, DOWN
+    DB 0Dh,      0, 08h,    0,   0,   0,     0,    0
+    ; 行 8: SPACE, HOME, INS, DEL, LEFT, UP, (NumPad...), ...
+    DB ' ',      0,   0,   0,    0,    0,   0,    0
 WAIT_KEY:
             ; キーマトリクス全スキャン
             ; 押されたキーの行/列から ASCII コードを割り出し
