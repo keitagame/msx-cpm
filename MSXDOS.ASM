@@ -19,15 +19,15 @@ ENTRY:
         DI                 
         LD   SP, STACK_TOP  
 
-        LD   A, 0x20       
+        LD   A, 0x10       
         OUT  (VDP_ADDR), A
         LD   A, 0x87
         OUT  (VDP_ADDR), A
 
 
-        LD   A, 0x00        ; アドレス下位 8bit
+        LD   A, 0x00       
         OUT  (VDP_ADDR), A
-        LD   A, 0x40        ; アドレス上位 6bit + 書き込みモード (Bit 6を立てる)
+        LD   A, 0x40       
         OUT  (VDP_ADDR), A
 
         
@@ -51,7 +51,19 @@ ENTRY:
         CALL PRINT
         LD   A, 'D'
         CALL PRINT
-
+        CALL LB
+        LD   A, 'M'
+        CALL PRINT
+        LD   A, 'S'
+        CALL PRINT
+        LD   A, 'X'
+        CALL PRINT
+        LD   A, 'C'
+        CALL PRINT
+        LD   A, 'P'
+        CALL PRINT
+        LD   A, 'M'
+        CALL PRINT
 HALT_LOOP:
         EI                  ; 割り込み許可
         HALT                ; CPUを停止して待機
@@ -61,6 +73,12 @@ PRINT:
         OUT  (VDP_DATA), A
         RET
 
+LB:
+        LD   A, 0x28        
+        OUT  (VDP_ADDR), A
+        LD   A, 0x40
+        OUT  (VDP_ADDR), A
+        RET
 
 ; --- スタック領域の確保 ---
         DS   64             ; スタック用に64バイト確保
